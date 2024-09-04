@@ -3,17 +3,57 @@ import argparse
 from transformers import pipeline
 from rich.progress import Progress, TimeElapsedColumn, BarColumn, TextColumn
 import torch
+import sounddevice as sd
+import numpy as np
+import queue
+import threading
 
 from .utils.diarization_pipeline import diarize
 from .utils.result import build_result
 
-parser = argparse.ArgumentParser(description="Automatic Speech Recognition")
+parser = argparse.ArgumentParser(description="Real-time Automatic Speech Recognition")
+
+# Remove the --file-name argument
 parser.add_argument(
-    "--file-name",
-    required=True,
-    type=str,
-    help="Path or URL to the audio file to be transcribed.",
+    "--input-device",
+    required=False,
+    type=int,
+    default=None,
+    help="Input device index for the microphone. If not specified, the default system microphone will be used.",
 )
+
+# Modify the --transcript-path argument
+parser.add_argument(
+    "--output-file",
+    required=False,
+    default=None,
+    type=str,
+    help="Path to save the transcription output. If not specified, output will only be printed to console.",
+)
+
+# Add a new argument for chunk duration
+parser.add_argument(
+    "--chunk-duration",
+    required=False,
+    type=float,
+    default=5.0,
+    help="Duration of each audio chunk to process, in seconds. (default: 5.0)",
+)
+
+# Add a new argument for context size
+parser.add_argument(
+    "--context-size",
+    required=False,
+    type=int,
+    default=3,
+    help="Number of chunks to use for context. (default: 3)",
+)
+
+# Keep other existing arguments...
+
+# Remove or modify arguments that are not applicable to real-time transcription
+# For example, you might want to remove or adjust the --batch-size argument
+
 parser.add_argument(
     "--device-id",
     required=False,
@@ -181,3 +221,70 @@ def main():
         print(
             f"Voila!✨ Your file has been transcribed go check it out over here 👉 {args.transcript_path}"
         )
+
+    # Set up audio stream
+    samplerate = 16000  # Whisper expects 16kHz audio
+    chunk_duration = args.chunk_duration  # Use the new chunk duration argument
+    chunk_samples = int(samplerate * chunk_duration)
+    context_size = args.context_size  # Use the new context size argument
+    
+    audio_buffer = queue.Queue()
+    context_buffer = ""
+    buffer_lock = threading.Lock()
+
+    def audio_callback(indata, frames, time, status):
+        if status:
+            print(status)
+        audio_chunk = indata[:, 0]
+        audio_buffer.put(audio_chunk)
+
+    def process_audio():
+        nonlocal context_buffer
+        audio_context = []
+        while True:
+            # Get the next audio chunk
+            chunk = audio_buffer.get()
+            audio_context.append(chunk)
+            
+            # Limit the audio context to the last 3 chunks (15 seconds)
+            if len(audio_context) > 3:
+                audio_context.pop(0)
+            
+            audio_data = np.concatenate(audio_context)
+            audio_tensor = torch.from_numpy(audio_data).float()
+            
+            # Process the audio chunk
+            result = pipe(audio_tensor, return_timestamps="word")
+            
+            with buffer_lock:
+                # Append new transcription to context buffer
+                context_buffer += " " + result["text"]
+                # Keep only the last 100 words for context
+                context_buffer = " ".join(context_buffer.split()[-100:])
+                
+                # Print the transcription with context
+                print(f"Transcription: {context_buffer}")
+
+    # Start the audio stream
+    with sd.InputStream(callback=audio_callback, channels=1, samplerate=samplerate,
+                        blocksize=chunk_samples, device=args.input_device):
+        print("Listening... Press Ctrl+C to stop.")
+        
+        # Start processing thread
+        process_thread = threading.Thread(target=process_audio)
+        process_thread.start()
+        
+        try:
+            while True:
+                sd.sleep(1000)
+        except KeyboardInterrupt:
+            print("\nStopped listening.")
+
+    # If an output file is specified, write the final transcription to it
+    if args.output_file:
+        with open(args.output_file, "w", encoding="utf8") as fp:
+            json.dump({"transcription": context_buffer}, fp, ensure_ascii=False)
+        print(f"Final transcription saved to {args.output_file}")
+
+if __name__ == "__main__":
+    main()
