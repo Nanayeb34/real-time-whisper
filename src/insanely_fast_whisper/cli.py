@@ -260,8 +260,11 @@ def main():
 
             # Diarize if enabled
             if args.diarize and diarization_pipeline:
+                if audio_data.ndim == 1:
+                    audio_data = audio_data.reshape(1, -1)
+                    audio_tensor = torch.from_numpy(audio_data).float()
                 diarization = diarize_audio(
-                    {"waveform": audio_tensor.unsqueeze(0), "sample_rate": samplerate}, 
+                    {"waveform": audio_tensor, "sample_rate": samplerate}, 
                     diarization_pipeline, 
                     args.num_speakers, 
                     args.min_speakers, 
