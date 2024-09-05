@@ -256,7 +256,7 @@ def main():
             # audio_tensor = torch.from_numpy(audio_data).float()
 
             # Transcribe
-            result = pipe(audio_data, return_timestamps="word")
+            result = pipe(audio_data, return_timestamps="chunk")
 
             # Diarize if enabled
             if args.diarize and diarization_pipeline:
