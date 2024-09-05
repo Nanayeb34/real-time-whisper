@@ -180,6 +180,7 @@ def main():
         tokenizer=processor.tokenizer,
         device="mps" if args.device_id == "mps" else f"cuda:{args.device_id}",
         model_kwargs={"attn_implementation": "flash_attention_2"} if args.flash else {"attn_implementation": "sdpa"},
+        return_timestamps=True  # Add this line
     )
 
     if args.device_id == "mps":
@@ -226,7 +227,7 @@ def main():
 
     # Set up audio stream
     samplerate = 16000  # Whisper expects 16kHz audio
-    chunk_duration = args.chunk_duration  # Use the new chunk duration argument
+    chunk_duration = max(args.chunk_duration, 10.0)  # Ensure minimum 10 seconds
     chunk_samples = int(samplerate * chunk_duration)
     context_size = args.context_size  # Use the new context size argument
     
@@ -253,37 +254,46 @@ def main():
                 audio_context.pop(0)
             
             audio_data = np.concatenate(audio_context)
-            # audio_tensor = torch.from_numpy(audio_data).float()
-
+            print(f"Audio data shape: {audio_data.shape}")
+            print(f"Audio data duration: {len(audio_data) / samplerate:.2f} seconds")
             # Transcribe
             result = pipe(audio_data, return_timestamps="chunk")
+            print(f"Transcript structure: {result}")
 
             # Diarize if enabled
             if args.diarize and diarization_pipeline:
-                if audio_data.ndim == 1:
-                    audio_data = audio_data.reshape(1, -1)
+                try:
+                    if audio_data.ndim == 1:
+                        audio_data = audio_data.reshape(1, -1)
                     audio_tensor = torch.from_numpy(audio_data).float()
-                diarization = diarize_audio(
-                    {"waveform": audio_tensor, "sample_rate": samplerate}, 
-                    diarization_pipeline, 
-                    args.num_speakers, 
-                    args.min_speakers, 
-                    args.max_speakers
-                )
-                # Post-process diarization results
-                diarized_result = post_process_segments_and_transcripts(
-                    diarization, [result], group_by_speaker=True
-                )
-                
-                with buffer_lock:
-                    # Update context buffer with diarized result
-                    for segment in diarized_result:
-                        context_buffer += f"\n{segment['speaker']}: {segment['text']}"
-                    # Keep only the last 1000 characters for context
-                    context_buffer = context_buffer[-1000:]
+                    diarization = diarize_audio(
+                        audio_tensor,
+                        diarization_pipeline, 
+                        args.num_speakers, 
+                        args.min_speakers, 
+                        args.max_speakers
+                    )
+                    # Post-process diarization results
+                    diarized_result = post_process_segments_and_transcripts(
+                        diarization, result, group_by_speaker=True
+                    )
                     
-                    # Print the diarized transcription
-                    print(f"Diarized Transcription: {context_buffer}")
+                    with buffer_lock:
+                        # Update context buffer with diarized result
+                        for segment in diarized_result:
+                            context_buffer += f"\n{segment['speaker']}: {segment['text']}"
+                        # Keep only the last 1000 characters for context
+                        context_buffer = context_buffer[-1000:]
+                        
+                        # Print the diarized transcription
+                        print(f"Diarized Transcription: {context_buffer}")
+                except Exception as e:
+                    print(f"Diarization failed: {str(e)}")
+                    # Fall back to non-diarized output
+                    with buffer_lock:
+                        context_buffer += " " + result["text"]
+                        context_buffer = context_buffer[-1000:]
+                        print(f"Transcription: {context_buffer}")
             else:
                 with buffer_lock:
                     # Update context buffer with non-diarized result

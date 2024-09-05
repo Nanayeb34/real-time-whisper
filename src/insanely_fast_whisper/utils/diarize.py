@@ -58,9 +58,9 @@ def preprocess_inputs(inputs):
     return inputs, diarizer_inputs
 
 
-def diarize_audio(diarizer_inputs, diarization_pipeline, num_speakers, min_speakers, max_speakers):
+def diarize_audio(waveform, diarization_pipeline, num_speakers, min_speakers, max_speakers):
     diarization = diarization_pipeline(
-        {"waveform": diarizer_inputs, "sample_rate": 16000},
+        {"waveform": waveform, "sample_rate": 16000},
         num_speakers=num_speakers,
         min_speakers=min_speakers,
         max_speakers=max_speakers,
@@ -113,37 +113,52 @@ def diarize_audio(diarizer_inputs, diarization_pipeline, num_speakers, min_speak
 
 
 def post_process_segments_and_transcripts(new_segments, transcript, group_by_speaker) -> list:
-    # get the end timestamps for each chunk from the ASR output
-    end_timestamps = np.array(
-        [chunk["timestamp"][-1] if chunk["timestamp"][-1] is not None else sys.float_info.max for chunk in transcript])
+    # Handle different possible structures of the transcript
+    if isinstance(transcript, dict):
+        # If transcript is a dictionary, it might contain a 'chunks' key
+        chunks = transcript.get('chunks', [transcript])
+    elif isinstance(transcript, list):
+        chunks = transcript
+    else:
+        chunks = [transcript]
+
+    # Get the end timestamps for each chunk from the ASR output
+    end_timestamps = []
+    for chunk in chunks:
+        if isinstance(chunk, dict):
+            timestamp = chunk.get('timestamp', (None, None))
+            if isinstance(timestamp, (list, tuple)) and len(timestamp) > 1 and timestamp[1] is not None:
+                end_timestamps.append(timestamp[1])
+            else:
+                end_timestamps.append(sys.float_info.max)
+        else:
+            end_timestamps.append(sys.float_info.max)
+
+    end_timestamps = np.array(end_timestamps)
     segmented_preds = []
 
-    # align the diarizer timestamps and the ASR timestamps
+    # Align the diarizer timestamps and the ASR timestamps
     for segment in new_segments:
-        # get the diarizer end timestamp
         end_time = segment["segment"]["end"]
-        # find the ASR end timestamp that is closest to the diarizer's end timestamp and cut the transcript to here
         upto_idx = np.argmin(np.abs(end_timestamps - end_time))
 
         if group_by_speaker:
-            segmented_preds.append(
-                {
-                    "speaker": segment["speaker"],
-                    "text": "".join(
-                        [chunk["text"] for chunk in transcript[: upto_idx + 1]]
-                    ),
-                    "timestamp": (
-                        transcript[0]["timestamp"][0],
-                        transcript[upto_idx]["timestamp"][1],
-                    ),
-                }
+            text = "".join([chunk.get('text', '') for chunk in chunks[:upto_idx + 1]])
+            timestamp = (
+                chunks[0].get('timestamp', (None, None))[0] if chunks else None,
+                chunks[upto_idx].get('timestamp', (None, None))[1] if chunks else None
             )
+            segmented_preds.append({
+                "speaker": segment["speaker"],
+                "text": text,
+                "timestamp": timestamp,
+            })
         else:
             for i in range(upto_idx + 1):
-                segmented_preds.append({"speaker": segment["speaker"], **transcript[i]})
+                segmented_preds.append({"speaker": segment["speaker"], **chunks[i]})
 
-        # crop the transcripts and timestamp lists according to the latest timestamp (for faster argmin)
-        transcript = transcript[upto_idx + 1:]
+        # Crop the chunks and timestamp lists
+        chunks = chunks[upto_idx + 1:]
         end_timestamps = end_timestamps[upto_idx + 1:]
 
         if len(end_timestamps) == 0:
