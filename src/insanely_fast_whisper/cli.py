@@ -49,10 +49,6 @@ parser.add_argument(
     help="Number of chunks to use for context. (default: 3)",
 )
 
-# Keep other existing arguments...
-
-# Remove or modify arguments that are not applicable to real-time transcription
-# For example, you might want to remove or adjust the --batch-size argument
 
 parser.add_argument(
     "--device-id",
@@ -196,31 +192,31 @@ def main():
     ) as progress:
         progress.add_task("[yellow]Transcribing...", total=None)
 
-        outputs = pipe(
-            args.file_name,
-            chunk_length_s=30,
-            batch_size=args.batch_size,
-            generate_kwargs=generate_kwargs,
-            return_timestamps=ts,
-        )
+        # outputs = pipe(
+        #     args.file_name,
+        #     chunk_length_s=30,
+        #     batch_size=args.batch_size,
+        #     generate_kwargs=generate_kwargs,
+        #     return_timestamps=ts,
+        # )
 
-    if args.hf_token != "no_token":
-        speakers_transcript = diarize(args, outputs)
-        with open(args.transcript_path, "w", encoding="utf8") as fp:
-            result = build_result(speakers_transcript, outputs)
-            json.dump(result, fp, ensure_ascii=False)
+    # if args.hf_token != "no_token":
+    #     speakers_transcript = diarize(args, outputs)
+    #     with open(args.transcript_path, "w", encoding="utf8") as fp:
+    #         result = build_result(speakers_transcript, outputs)
+    #         json.dump(result, fp, ensure_ascii=False)
 
-        print(
-            f"Voila!✨ Your file has been transcribed & speaker segmented go check it out over here 👉 {args.transcript_path}"
-        )
-    else:
-        with open(args.transcript_path, "w", encoding="utf8") as fp:
-            result = build_result([], outputs)
-            json.dump(result, fp, ensure_ascii=False)
+    #     print(
+    #         f"Voila!✨ Your file has been transcribed & speaker segmented go check it out over here 👉 {args.transcript_path}"
+    #     )
+    # else:
+    #     with open(args.transcript_path, "w", encoding="utf8") as fp:
+    #         result = build_result([], outputs)
+    #         json.dump(result, fp, ensure_ascii=False)
 
-        print(
-            f"Voila!✨ Your file has been transcribed go check it out over here 👉 {args.transcript_path}"
-        )
+    #     print(
+    #         f"Voila!✨ Your file has been transcribed go check it out over here 👉 {args.transcript_path}"
+    #     )
 
     # Set up audio stream
     samplerate = 16000  # Whisper expects 16kHz audio
@@ -251,7 +247,7 @@ def main():
                 audio_context.pop(0)
             
             audio_data = np.concatenate(audio_context)
-            audio_tensor = torch.from_numpy(audio_data).float()
+           
             
             # Process the audio chunk
             result = pipe(audio_tensor, return_timestamps="word")
