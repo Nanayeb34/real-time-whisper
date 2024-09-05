@@ -1,12 +1,14 @@
 import json
 import argparse
-from transformers import pipeline
+from transformers import pipeline, WhisperProcessor
 from rich.progress import Progress, TimeElapsedColumn, BarColumn, TextColumn
 import torch
 import sounddevice as sd
 import numpy as np
 import queue
 import threading
+from pyannote.audio import Pipeline
+from .utils.diarize import diarize_audio, post_process_segments_and_transcripts
 
 from .utils.diarization_pipeline import diarize
 from .utils.result import build_result
@@ -48,7 +50,6 @@ parser.add_argument(
     default=3,
     help="Number of chunks to use for context. (default: 3)",
 )
-
 
 parser.add_argument(
     "--device-id",
@@ -144,6 +145,13 @@ parser.add_argument(
     help="Defines the maximum number of speakers that the system should consider in diarization. Must be at least 1. Cannot be used together with --num-speakers. Must be greater than or equal to --min-speakers if both are specified. (default: None)",
 )
 
+# Add this new argument to the parser
+parser.add_argument(
+    "--diarize",
+    action="store_true",
+    help="Enable diarization for the transcription.",
+)
+
 def main():
     args = parser.parse_args()
 
@@ -163,10 +171,13 @@ def main():
         if args.min_speakers > args.max_speakers:
             parser.error("--min-speakers cannot be greater than --max-speakers.")
 
+    processor = WhisperProcessor.from_pretrained(args.model_name)
     pipe = pipeline(
         "automatic-speech-recognition",
         model=args.model_name,
         torch_dtype=torch.float16,
+        feature_extractor=processor.feature_extractor,
+        tokenizer=processor.tokenizer,
         device="mps" if args.device_id == "mps" else f"cuda:{args.device_id}",
         model_kwargs={"attn_implementation": "flash_attention_2"} if args.flash else {"attn_implementation": "sdpa"},
     )
@@ -200,23 +211,18 @@ def main():
         #     return_timestamps=ts,
         # )
 
-    # if args.hf_token != "no_token":
-    #     speakers_transcript = diarize(args, outputs)
-    #     with open(args.transcript_path, "w", encoding="utf8") as fp:
-    #         result = build_result(speakers_transcript, outputs)
-    #         json.dump(result, fp, ensure_ascii=False)
-
-    #     print(
-    #         f"Voila!✨ Your file has been transcribed & speaker segmented go check it out over here 👉 {args.transcript_path}"
-    #     )
-    # else:
-    #     with open(args.transcript_path, "w", encoding="utf8") as fp:
-    #         result = build_result([], outputs)
-    #         json.dump(result, fp, ensure_ascii=False)
-
-    #     print(
-    #         f"Voila!✨ Your file has been transcribed go check it out over here 👉 {args.transcript_path}"
-    #     )
+    # Set up diarization pipeline only if diarization is enabled
+    diarization_pipeline = None
+    if args.diarize:
+        if args.hf_token == "no_token":
+            parser.error("Diarization requires a HuggingFace token. Please provide --hf-token.")
+        diarization_pipeline = Pipeline.from_pretrained(
+            checkpoint_path=args.diarization_model,
+            use_auth_token=args.hf_token,
+        )
+        diarization_pipeline.to(
+            torch.device("mps" if args.device_id == "mps" else f"cuda:{args.device_id}")
+        )
 
     # Set up audio stream
     samplerate = 16000  # Whisper expects 16kHz audio
@@ -243,23 +249,47 @@ def main():
             audio_context.append(chunk)
             
             # Limit the audio context to the last 3 chunks (15 seconds)
-            if len(audio_context) > 3:
+            if len(audio_context) > context_size:
                 audio_context.pop(0)
             
             audio_data = np.concatenate(audio_context)
-           
-            
-            # Process the audio chunk
-            result = pipe(audio_tensor, return_timestamps="word")
-            
-            with buffer_lock:
-                # Append new transcription to context buffer
-                context_buffer += " " + result["text"]
-                # Keep only the last 100 words for context
-                context_buffer = " ".join(context_buffer.split()[-100:])
+            # audio_tensor = torch.from_numpy(audio_data).float()
+
+            # Transcribe
+            result = pipe(audio_data, return_timestamps="word")
+
+            # Diarize if enabled
+            if args.diarize and diarization_pipeline:
+                diarization = diarize_audio(
+                    {"waveform": audio_tensor.unsqueeze(0), "sample_rate": samplerate}, 
+                    diarization_pipeline, 
+                    args.num_speakers, 
+                    args.min_speakers, 
+                    args.max_speakers
+                )
+                # Post-process diarization results
+                diarized_result = post_process_segments_and_transcripts(
+                    diarization, [result], group_by_speaker=True
+                )
                 
-                # Print the transcription with context
-                print(f"Transcription: {context_buffer}")
+                with buffer_lock:
+                    # Update context buffer with diarized result
+                    for segment in diarized_result:
+                        context_buffer += f"\n{segment['speaker']}: {segment['text']}"
+                    # Keep only the last 1000 characters for context
+                    context_buffer = context_buffer[-1000:]
+                    
+                    # Print the diarized transcription
+                    print(f"Diarized Transcription: {context_buffer}")
+            else:
+                with buffer_lock:
+                    # Update context buffer with non-diarized result
+                    context_buffer += " " + result["text"]
+                    # Keep only the last 1000 characters for context
+                    context_buffer = context_buffer[-1000:]
+                    
+                    # Print the non-diarized transcription
+                    print(f"Transcription: {context_buffer}")
 
     # Start the audio stream
     with sd.InputStream(callback=audio_callback, channels=1, samplerate=samplerate,
