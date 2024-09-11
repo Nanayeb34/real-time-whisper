@@ -197,13 +197,6 @@ def main():
     if args.model_name.split(".")[-1] == "en":
         generate_kwargs.pop("task")
 
-    with Progress(
-        TextColumn("🤗 [progress.description]{task.description}"),
-        BarColumn(style="yellow1", pulse_style="white"),
-        TimeElapsedColumn(),
-    ) as progress:
-        progress.add_task("[yellow]Transcribing...", total=None)
-
         # outputs = pipe(
         #     args.file_name,
         #     chunk_length_s=30,
@@ -257,7 +250,7 @@ def main():
             print(f"Audio data shape: {audio_data.shape}")
             print(f"Audio data duration: {len(audio_data) / samplerate:.2f} seconds")
             # Transcribe
-            result = pipe(audio_data, return_timestamps="chunk")
+            result = pipe(audio_data, return_timestamps=True)
             print(f"Transcript structure: {result}")
 
             # Diarize if enabled
