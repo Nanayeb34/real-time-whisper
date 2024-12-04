@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Real-time Speech Transcription</title>
+</head>
+<body>
+    <h1>Real-time Speech Transcription</h1>
+    <button id="startButton">Start Recording</button>
+    <button id="stopButton" disabled>Stop Recording</button>
+    <div id="transcription"></div>
+
+    <script>
+        let socket;
+        let mediaRecorder;
+        let audioChunks = [];
+
+        const startButton = document.getElementById('startButton');
+        const stopButton = document.getElementById('stopButton');
+        const transcriptionDiv = document.getElementById('transcription');
+
+        startButton.onclick = startRecording;
+        stopButton.onclick = stopRecording;
+
+        function startRecording() {
+            socket = new WebSocket('ws://localhost:8001/ws');
+            
+            socket.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                if (data.type === 'transcription') {
+                    transcriptionDiv.textContent = data.text;
+                }
+            };
+
+            navigator.mediaDevices.getUserMedia({ audio: true })
+                .then(stream => {
+                    mediaRecorder = new MediaRecorder(stream);
+                    mediaRecorder.ondataavailable = (event) => {
+                        audioChunks.push(event.data);
+                        if (audioChunks.length === 10) {  // Adjust as needed
+                            const audioBlob = new Blob(audioChunks);
+                            audioChunks = [];
+                            sendAudioToServer(audioBlob);
+                        }
+                    };
+                    mediaRecorder.start(100);  // Capture audio in 100ms chunks
+                    startButton.disabled = true;
+                    stopButton.disabled = false;
+                });
+        }
+
+        function stopRecording() {
+            mediaRecorder.stop();
+            startButton.disabled = false;
+            stopButton.disabled = true;
+            socket.send(JSON.stringify({ type: 'close' }));
+            socket.close();
+        }
+
+        function sendAudioToServer(audioBlob) {
+            const reader = new FileReader();
+            reader.onloadend = () => {
+                const audioBuffer =  reader.result;
+                const audioData = new Float32Array(audioBuffer);
+                socket.send(JSON.stringify({
+                    type: 'audio',
+                    data: Array.from(audioData),
+                    diarize: false,  // Set to false if diarization is not needed
+                    num_speakers: 2,  // Adjust as needed
+                    min_speakers: 1,
+                    max_speakers: 2
+                }));
+            };
+            reader.readAsArrayBuffer(audioBlob);
+        }
+    </script>
+</body>
+</html>

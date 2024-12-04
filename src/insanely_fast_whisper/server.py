@@ -6,8 +6,10 @@ from transformers import pipeline, WhisperProcessor
 import torch
 import numpy as np
 from pyannote.audio import Pipeline
-from .utils.diarize import diarize_audio, post_process_segments_and_transcripts
+import nest_asyncio
+from utils.diarize import diarize_audio, post_process_segments_and_transcripts
 
+nest_asyncio.apply()
 app = FastAPI()
 
 # Add CORS middleware
@@ -23,11 +25,11 @@ app.add_middleware(
 processor = WhisperProcessor.from_pretrained("openai/whisper-large-v3")
 pipe = pipeline(
     "automatic-speech-recognition",
-    model="openai/whisper-large-v3",
+    model="distil-whisper/distil-large-v3", #openai/whisper-large-v3
     torch_dtype=torch.float16,
     feature_extractor=processor.feature_extractor,
     tokenizer=processor.tokenizer,
-    device="cuda:0",  # Adjust as needed
+    device="mps",  #cuda
     return_timestamps=True
 )
 
@@ -36,7 +38,7 @@ diarization_pipeline = Pipeline.from_pretrained(
     "pyannote/speaker-diarization-3.1",
     use_auth_token="YOUR_HF_TOKEN_HERE"  # Replace with your Hugging Face token
 )
-diarization_pipeline.to(torch.device("cuda:0"))  # Adjust as needed
+diarization_pipeline.to(torch.device("mps"))  # Adjust as needed
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
@@ -50,9 +52,9 @@ async def websocket_endpoint(websocket: WebSocket):
             data = await websocket.receive_json()
             
             if data["type"] == "audio":
-                audio_chunk = np.frombuffer(data["data"], dtype=np.float32)
-                audio_buffer.append(audio_chunk)
-                
+                audio_chunk=np.array(data["data"],dtype=np.float32).tobytes()
+                audio_buffer.append(np.frombuffer(audio_chunk, dtype=np.float32))
+               
                 # Process audio when buffer reaches certain size
                 if len(audio_buffer) >= 2:  # Adjust as needed
                     audio_data = np.concatenate(audio_buffer)
@@ -102,4 +104,4 @@ async def websocket_endpoint(websocket: WebSocket):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=8001)
